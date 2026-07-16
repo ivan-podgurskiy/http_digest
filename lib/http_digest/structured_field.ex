@@ -48,4 +48,99 @@ defmodule HTTPDigest.StructuredField do
        do: validate_key_rest(rest)
 
   defp validate_key_rest(_), do: {:error, :invalid_key}
+
+  @spec parse_dictionary(binary()) :: {:ok, members()} | {:error, :malformed}
+  def parse_dictionary(input) when is_binary(input) do
+    case input |> trim_sp() |> parse_members([]) do
+      {:ok, members} -> {:ok, last_wins(members)}
+      :error -> {:error, :malformed}
+    end
+  end
+
+  defp parse_members("", acc), do: {:ok, Enum.reverse(acc)}
+
+  defp parse_members(input, acc) do
+    with {:ok, key, rest} <- parse_key(input),
+         {:ok, value, rest} <- parse_eq_value(rest) do
+      case skip_ows(rest) do
+        "" ->
+          {:ok, Enum.reverse([{key, value} | acc])}
+
+        <<?,, rest::binary>> ->
+          case skip_ows(rest) do
+            "" -> :error
+            next -> parse_members(next, [{key, value} | acc])
+          end
+
+        _other ->
+          :error
+      end
+    end
+  end
+
+  defp parse_key(<<c, _::binary>> = input) when c in ?a..?z or c == ?*,
+    do: take_key(input, <<>>)
+
+  defp parse_key(_), do: :error
+
+  defp take_key(<<c, rest::binary>>, acc)
+       when c in ?a..?z or c in ?0..?9 or c in [?_, ?-, ?., ?*],
+       do: take_key(rest, <<acc::binary, c>>)
+
+  defp take_key(rest, acc), do: {:ok, acc, rest}
+
+  defp parse_eq_value(<<?=, rest::binary>>), do: parse_value(rest)
+  defp parse_eq_value(_), do: :error
+
+  defp parse_value(<<?:, rest::binary>>) do
+    with {:ok, b64, rest} <- take_until_colon(rest, <<>>),
+         {:ok, bytes} <- decode_base64(b64) do
+      {:ok, {:binary, bytes}, rest}
+    else
+      _ -> :error
+    end
+  end
+
+  defp parse_value(<<?-, c, _::binary>> = input) when c in ?0..?9 do
+    <<?-, rest::binary>> = input
+
+    with {:ok, {:integer, i}, rest} <- take_digits(rest, <<>>) do
+      {:ok, {:integer, -i}, rest}
+    end
+  end
+
+  defp parse_value(<<c, _::binary>> = input) when c in ?0..?9, do: take_digits(input, <<>>)
+  defp parse_value(_), do: :error
+
+  defp take_digits(<<c, rest::binary>>, acc) when c in ?0..?9,
+    do: take_digits(rest, <<acc::binary, c>>)
+
+  defp take_digits(rest, acc) when byte_size(acc) in 1..15,
+    do: {:ok, {:integer, String.to_integer(acc)}, rest}
+
+  defp take_digits(_rest, _acc), do: :error
+
+  defp take_until_colon(<<?:, rest::binary>>, acc), do: {:ok, acc, rest}
+
+  defp take_until_colon(<<c, rest::binary>>, acc)
+       when c in ?A..?Z or c in ?a..?z or c in ?0..?9 or c in [?+, ?/, ?=],
+       do: take_until_colon(rest, <<acc::binary, c>>)
+
+  defp take_until_colon(_, _), do: :error
+
+  defp decode_base64(b64) do
+    case Base.decode64(b64) do
+      {:ok, bytes} -> {:ok, bytes}
+      :error -> Base.decode64(b64, padding: false)
+    end
+  end
+
+  defp skip_ows(<<c, rest::binary>>) when c in [?\s, ?\t], do: skip_ows(rest)
+  defp skip_ows(input), do: input
+
+  defp trim_sp(input), do: String.trim(input, " ")
+
+  defp last_wins(members) do
+    members |> Enum.reverse() |> Enum.uniq_by(&elem(&1, 0)) |> Enum.reverse()
+  end
 end

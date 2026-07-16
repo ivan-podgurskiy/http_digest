@@ -41,4 +41,57 @@ defmodule HTTPDigest.StructuredFieldTest do
       assert SF.serialize_dictionary([{"a", {:string, "x"}}]) == {:error, :unsupported_value}
     end
   end
+
+  describe "parse_dictionary/1" do
+    test "parses byte sequence members" do
+      digest = :crypto.hash(:sha256, ~s({"hello": "world"}))
+
+      assert SF.parse_dictionary("sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:") ==
+               {:ok, [{"sha-256", {:binary, digest}}]}
+    end
+
+    test "parses multi-member dictionaries with flexible OWS" do
+      assert {:ok, members} = SF.parse_dictionary("sha-512=10,sha-256=5")
+      assert members == [{"sha-512", {:integer, 10}}, {"sha-256", {:integer, 5}}]
+
+      assert {:ok, ^members} = SF.parse_dictionary("sha-512=10,   sha-256=5")
+      assert {:ok, ^members} = SF.parse_dictionary("  sha-512=10, sha-256=5  ")
+    end
+
+    test "parses negative integers" do
+      assert SF.parse_dictionary("a=-42") == {:ok, [{"a", {:integer, -42}}]}
+    end
+
+    test "empty input is an empty dictionary" do
+      assert SF.parse_dictionary("") == {:ok, []}
+      assert SF.parse_dictionary("   ") == {:ok, []}
+    end
+
+    test "duplicate keys: last wins" do
+      assert SF.parse_dictionary("a=1, b=2, a=3") ==
+               {:ok, [{"b", {:integer, 2}}, {"a", {:integer, 3}}]}
+    end
+
+    test "malformed inputs fail" do
+      for bad <- [
+            "a=",
+            "a=1,",
+            ",a=1",
+            "a=1 b=2",
+            "A=1",
+            "a=:!!!:",
+            "a=:aGk:extra",
+            "a=:aGk",
+            "a=1.5",
+            ~s(a="str"),
+            "a=?1",
+            "a",
+            "a=(1 2)",
+            "a=1;p=1",
+            "a=9999999999999999"
+          ] do
+        assert SF.parse_dictionary(bad) == {:error, :malformed}, "expected failure for: #{bad}"
+      end
+    end
+  end
 end
