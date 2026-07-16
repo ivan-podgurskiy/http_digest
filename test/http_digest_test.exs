@@ -43,4 +43,41 @@ defmodule HTTPDigestTest do
       assert HTTPDigest.repr_digest(@body) == HTTPDigest.content_digest(@body)
     end
   end
+
+  describe "parse_content_digest/2" do
+    test "parses known algorithms to atom keys with raw digest bytes" do
+      digest = :crypto.hash(:sha256, @body)
+
+      assert HTTPDigest.parse_content_digest(
+               "sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:"
+             ) == {:ok, %{sha256: digest}}
+    end
+
+    test "preserves unknown algorithms under string keys" do
+      assert {:ok, map} = HTTPDigest.parse_content_digest("blake2=:aGVsbG8=:, sha-256=:aGk=:")
+      assert map["blake2"] == "hello"
+      assert map.sha256 == "hi"
+    end
+
+    test "on_unknown: :error rejects unknown algorithms" do
+      assert {:error, %HTTPDigest.Error{reason: :unknown_algorithm, algorithm: "blake2"}} =
+               HTTPDigest.parse_content_digest("blake2=:aGk=:", on_unknown: :error)
+    end
+
+    test "error taxonomy" do
+      assert {:error, %HTTPDigest.Error{reason: :empty_header}} =
+               HTTPDigest.parse_content_digest("")
+
+      assert {:error, %HTTPDigest.Error{reason: :malformed_header}} =
+               HTTPDigest.parse_content_digest("sha-256=oops")
+
+      assert {:error, %HTTPDigest.Error{reason: :malformed_header}} =
+               HTTPDigest.parse_content_digest("sha-256=5")
+    end
+
+    test "parse_repr_digest/2 is identical in mechanics" do
+      header = "sha-256=:aGk=:"
+      assert HTTPDigest.parse_repr_digest(header) == HTTPDigest.parse_content_digest(header)
+    end
+  end
 end

@@ -43,6 +43,21 @@ defmodule HTTPDigest do
   @spec repr_digest(iodata(), keyword()) :: {:ok, String.t()} | {:error, Error.t()}
   def repr_digest(representation, opts \\ []), do: build_digest(representation, opts)
 
+  @doc """
+  Parses a `Content-Digest` header value into a map of algorithm to raw digest
+  bytes.
+
+  Known algorithms get atom keys such as `:sha256`. Unknown dictionary keys are
+  preserved under string keys because RFC 9530 receivers must ignore unknown
+  algorithms unless the caller opts into `on_unknown: :error`.
+  """
+  @spec parse_content_digest(binary(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def parse_content_digest(header, opts \\ []), do: parse_digest_header(header, opts)
+
+  @doc "Parses a `Repr-Digest` header value. See `parse_content_digest/2`."
+  @spec parse_repr_digest(binary(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def parse_repr_digest(header, opts \\ []), do: parse_digest_header(header, opts)
+
   defp build_digest(body, opts) do
     algorithms = Keyword.get(opts, :algorithms, @default_algorithms)
     allow_insecure = Keyword.get(opts, :allow_insecure, false)
@@ -65,6 +80,40 @@ defmodule HTTPDigest do
       else
         {:error, %Error{reason: :insecure_algorithm_refused, algorithm: alg}}
       end
+    end)
+  end
+
+  defp parse_digest_header(header, opts) do
+    on_unknown = Keyword.get(opts, :on_unknown, :ignore)
+
+    case StructuredField.parse_dictionary(header) do
+      {:ok, []} ->
+        {:error, %Error{reason: :empty_header}}
+
+      {:ok, members} ->
+        digest_map(members, on_unknown)
+
+      {:error, :malformed} ->
+        {:error, %Error{reason: :malformed_header}}
+    end
+  end
+
+  defp digest_map(members, on_unknown) do
+    Enum.reduce_while(members, {:ok, %{}}, fn
+      {key, {:binary, bytes}}, {:ok, acc} ->
+        case Algorithms.from_iana(key) do
+          {:ok, alg} ->
+            {:cont, {:ok, Map.put(acc, alg, bytes)}}
+
+          :error when on_unknown == :ignore ->
+            {:cont, {:ok, Map.put(acc, key, bytes)}}
+
+          :error ->
+            {:halt, {:error, %Error{reason: :unknown_algorithm, algorithm: key}}}
+        end
+
+      {_key, {:integer, _}}, _acc ->
+        {:halt, {:error, %Error{reason: :malformed_header}}}
     end)
   end
 end
