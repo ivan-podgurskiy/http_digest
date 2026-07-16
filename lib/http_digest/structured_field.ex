@@ -141,6 +141,14 @@ defmodule HTTPDigest.StructuredField do
   defp trim_sp(input), do: String.trim(input, " ")
 
   defp last_wins(members) do
-    members |> Enum.reverse() |> Enum.uniq_by(&elem(&1, 0)) |> Enum.reverse()
+    {keys, values} =
+      Enum.reduce(members, {[], %{}}, fn {key, value}, {keys, values} ->
+        keys = if Map.has_key?(values, key), do: keys, else: [key | keys]
+        {keys, Map.put(values, key, value)}
+      end)
+
+    keys
+    |> Enum.reverse()
+    |> Enum.map(&{&1, Map.fetch!(values, &1)})
   end
 end

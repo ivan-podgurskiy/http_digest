@@ -69,7 +69,7 @@ defmodule HTTPDigest.StructuredFieldTest do
 
     test "duplicate keys: last wins" do
       assert SF.parse_dictionary("a=1, b=2, a=3") ==
-               {:ok, [{"b", {:integer, 2}}, {"a", {:integer, 3}}]}
+               {:ok, [{"a", {:integer, 3}}, {"b", {:integer, 2}}]}
     end
 
     test "malformed inputs fail" do
