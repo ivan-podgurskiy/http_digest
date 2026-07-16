@@ -18,6 +18,7 @@ defmodule HTTPDigest do
   alias HTTPDigest.{Algorithms, Error, StructuredField}
 
   @default_algorithms [:sha256]
+  @default_supported [:sha256, :sha512]
 
   @doc """
   Builds a `Content-Digest` header value over `body` (iodata).
@@ -57,6 +58,32 @@ defmodule HTTPDigest do
   @doc "Parses a `Repr-Digest` header value. See `parse_content_digest/2`."
   @spec parse_repr_digest(binary(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def parse_repr_digest(header, opts \\ []), do: parse_digest_header(header, opts)
+
+  @doc """
+  Verifies a `Content-Digest` header against `body`.
+
+  The default `:strongest` policy checks only the strongest digest present
+  whose algorithm is supported, so a tampered strong digest fails even when a
+  weaker digest still matches. `policy: :any` accepts the strongest matching
+  digest and should only be used when compatibility requires it.
+  """
+  @spec verify_content(iodata(), binary(), keyword()) :: {:ok, atom()} | {:error, Error.t()}
+  def verify_content(body, header, opts \\ []),
+    do: verify(header, opts, fn alg -> :crypto.hash(Algorithms.crypto_alg(alg), body) end)
+
+  @doc "Verifies a `Repr-Digest` header against representation bytes. See `verify_content/3`."
+  @spec verify_repr(iodata(), binary(), keyword()) :: {:ok, atom()} | {:error, Error.t()}
+  def verify_repr(representation, header, opts \\ []),
+    do: verify_content(representation, header, opts)
+
+  @doc """
+  Verifies a digest header against precomputed digests, such as
+  `%{sha256: <<...>>}` from a streaming body reader.
+  """
+  @spec verify_digests(%{optional(atom()) => binary()}, binary(), keyword()) ::
+          {:ok, atom()} | {:error, Error.t()}
+  def verify_digests(computed, header, opts \\ []) when is_map(computed),
+    do: verify(header, opts, fn alg -> Map.get(computed, alg, :missing) end)
 
   defp build_digest(body, opts) do
     algorithms = Keyword.get(opts, :algorithms, @default_algorithms)
@@ -115,5 +142,56 @@ defmodule HTTPDigest do
       {_key, {:integer, _}}, _acc ->
         {:halt, {:error, %Error{reason: :malformed_header}}}
     end)
+  end
+
+  defp verify(header, opts, compute_fun) do
+    supported = Keyword.get(opts, :supported, @default_supported)
+    policy = Keyword.get(opts, :policy, :strongest)
+    allow_insecure = Keyword.get(opts, :allow_insecure, false)
+
+    with {:ok, digests} <- parse_digest_header(header, []) do
+      present = for {alg, bytes} <- digests, is_atom(alg), alg in supported, do: {alg, bytes}
+
+      verifiable =
+        Enum.filter(present, fn {alg, _} -> Algorithms.verifiable?(alg, allow_insecure) end)
+
+      cond do
+        present == [] ->
+          {:error, %Error{reason: :no_supported_algorithm}}
+
+        verifiable == [] ->
+          {alg, _} = Enum.max_by(present, fn {alg, _} -> Algorithms.strength(alg) end)
+          {:error, %Error{reason: :insecure_algorithm_refused, algorithm: alg}}
+
+        true ->
+          verifiable
+          |> Enum.sort_by(fn {alg, _} -> Algorithms.strength(alg) end, :desc)
+          |> apply_policy(policy, compute_fun)
+      end
+    end
+  end
+
+  defp apply_policy([{alg, expected} | _], :strongest, compute_fun),
+    do: check_digest(alg, expected, compute_fun)
+
+  defp apply_policy([{strongest, _} | _] = ordered, :any, compute_fun) do
+    Enum.find_value(ordered, fn {alg, expected} ->
+      case check_digest(alg, expected, compute_fun) do
+        {:ok, _} = ok -> ok
+        {:error, _} -> nil
+      end
+    end) || {:error, %Error{reason: :digest_mismatch, algorithm: strongest}}
+  end
+
+  defp check_digest(alg, expected, compute_fun) do
+    case compute_fun.(alg) do
+      computed when is_binary(computed) and byte_size(computed) == byte_size(expected) ->
+        if :crypto.hash_equals(computed, expected),
+          do: {:ok, alg},
+          else: {:error, %Error{reason: :digest_mismatch, algorithm: alg}}
+
+      _missing_or_wrong_size ->
+        {:error, %Error{reason: :digest_mismatch, algorithm: alg}}
+    end
   end
 end
