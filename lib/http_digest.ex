@@ -13,6 +13,10 @@ defmodule HTTPDigest do
 
   This library never guesses: you pass the bytes, it hashes them. For
   `Repr-Digest` you must pass the representation bytes as you define them.
+
+  See `HTTPDigest.Stream` for incremental hashing, `HTTPDigest.Plug` for
+  incoming Plug request verification, and `HTTPDigest.Req` for outgoing Req
+  requests.
   """
 
   alias HTTPDigest.{Algorithms, Error, StructuredField}
