@@ -159,4 +159,54 @@ defmodule HTTPDigestTest do
                HTTPDigest.verify_digests(%{sha256: :crypto.hash(:sha256, @body)}, header)
     end
   end
+
+  describe "Want-* fields" do
+    test "build_want_content_digest/1" do
+      assert HTTPDigest.build_want_content_digest(sha512: 10, sha256: 5) ==
+               {:ok, "sha-512=10, sha-256=5"}
+    end
+
+    test "preferences outside 0..10 are rejected" do
+      assert {:error, %HTTPDigest.Error{reason: :invalid_preference}} =
+               HTTPDigest.build_want_content_digest(sha256: 11)
+
+      assert {:error, %HTTPDigest.Error{reason: :invalid_preference}} =
+               HTTPDigest.build_want_content_digest(sha256: -1)
+    end
+
+    test "parse_want_content_digest/1" do
+      assert HTTPDigest.parse_want_content_digest("sha-512=10, sha-256=5, blake2=3") ==
+               {:ok, %{:sha512 => 10, :sha256 => 5, "blake2" => 3}}
+
+      assert {:error, %HTTPDigest.Error{reason: :malformed_header}} =
+               HTTPDigest.parse_want_content_digest("sha-256=:aGk=:")
+
+      assert {:error, %HTTPDigest.Error{reason: :invalid_preference}} =
+               HTTPDigest.parse_want_content_digest("sha-256=12")
+    end
+
+    test "select_from_want/2 picks highest preference, strength breaks ties" do
+      assert HTTPDigest.select_from_want("sha-512=10, sha-256=5", supported: [:sha256, :sha512]) ==
+               {:ok, :sha512}
+
+      assert HTTPDigest.select_from_want("sha-512=3, sha-256=3", supported: [:sha256, :sha512]) ==
+               {:ok, :sha512}
+
+      assert HTTPDigest.select_from_want("sha-512=10, sha-256=5", supported: [:sha256]) ==
+               {:ok, :sha256}
+    end
+
+    test "select_from_want/2: zero preference means not acceptable" do
+      assert {:error, %HTTPDigest.Error{reason: :no_supported_algorithm}} =
+               HTTPDigest.select_from_want("sha-256=0", supported: [:sha256])
+
+      assert {:error, %HTTPDigest.Error{reason: :no_supported_algorithm}} =
+               HTTPDigest.select_from_want("blake2=10", supported: [:sha256])
+    end
+
+    test "want repr variants share mechanics" do
+      assert HTTPDigest.build_want_repr_digest(sha256: 3) == {:ok, "sha-256=3"}
+      assert HTTPDigest.parse_want_repr_digest("sha-256=3") == {:ok, %{sha256: 3}}
+    end
+  end
 end

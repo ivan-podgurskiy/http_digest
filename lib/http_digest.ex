@@ -85,6 +85,63 @@ defmodule HTTPDigest do
   def verify_digests(computed, header, opts \\ []) when is_map(computed),
     do: verify(header, opts, fn alg -> Map.get(computed, alg, :missing) end)
 
+  @doc """
+  Builds a `Want-Content-Digest` header value from `{algorithm, preference}`
+  pairs.
+
+  Preferences are integers from 0 to 10. A preference of 0 means not
+  acceptable.
+
+      iex> HTTPDigest.build_want_content_digest(sha512: 10, sha256: 5)
+      {:ok, "sha-512=10, sha-256=5"}
+  """
+  @spec build_want_content_digest(keyword(integer())) :: {:ok, String.t()} | {:error, Error.t()}
+  def build_want_content_digest(prefs), do: build_want(prefs)
+
+  @doc "Builds a `Want-Repr-Digest` header value. See `build_want_content_digest/1`."
+  @spec build_want_repr_digest(keyword(integer())) :: {:ok, String.t()} | {:error, Error.t()}
+  def build_want_repr_digest(prefs), do: build_want(prefs)
+
+  @doc """
+  Parses a `Want-Content-Digest` header into a map of algorithm to preference.
+
+  Known algorithms get atom keys. Unknown algorithms are preserved under string
+  keys.
+  """
+  @spec parse_want_content_digest(binary()) :: {:ok, map()} | {:error, Error.t()}
+  def parse_want_content_digest(header), do: parse_want(header)
+
+  @doc "Parses a `Want-Repr-Digest` header. See `parse_want_content_digest/1`."
+  @spec parse_want_repr_digest(binary()) :: {:ok, map()} | {:error, Error.t()}
+  def parse_want_repr_digest(header), do: parse_want(header)
+
+  @doc """
+  Selects the response digest algorithm requested by a `Want-*` header.
+
+  Among supported algorithms with preference greater than 0, the highest
+  preference wins. Ties go to the stronger algorithm.
+  """
+  @spec select_from_want(binary(), keyword()) :: {:ok, atom()} | {:error, Error.t()}
+  def select_from_want(header, opts) do
+    supported = Keyword.fetch!(opts, :supported)
+
+    with {:ok, prefs} <- parse_want(header) do
+      candidates =
+        for {alg, pref} <- prefs, is_atom(alg), alg in supported, pref > 0, do: {alg, pref}
+
+      case candidates do
+        [] ->
+          {:error, %Error{reason: :no_supported_algorithm}}
+
+        _ ->
+          {alg, _} =
+            Enum.max_by(candidates, fn {alg, pref} -> {pref, Algorithms.strength(alg)} end)
+
+          {:ok, alg}
+      end
+    end
+  end
+
   defp build_digest(body, opts) do
     algorithms = Keyword.get(opts, :algorithms, @default_algorithms)
     allow_insecure = Keyword.get(opts, :allow_insecure, false)
@@ -193,5 +250,44 @@ defmodule HTTPDigest do
       _missing_or_wrong_size ->
         {:error, %Error{reason: :digest_mismatch, algorithm: alg}}
     end
+  end
+
+  defp build_want(prefs) do
+    if Enum.all?(prefs, fn {_alg, pref} -> is_integer(pref) and pref in 0..10 end) do
+      members = for {alg, pref} <- prefs, do: {Algorithms.to_iana(alg), {:integer, pref}}
+      {:ok, value} = StructuredField.serialize_dictionary(members)
+      {:ok, value}
+    else
+      {:error, %Error{reason: :invalid_preference}}
+    end
+  end
+
+  defp parse_want(header) do
+    case StructuredField.parse_dictionary(header) do
+      {:ok, []} ->
+        {:error, %Error{reason: :empty_header}}
+
+      {:ok, members} ->
+        want_map(members)
+
+      {:error, :malformed} ->
+        {:error, %Error{reason: :malformed_header}}
+    end
+  end
+
+  defp want_map(members) do
+    Enum.reduce_while(members, {:ok, %{}}, fn
+      {key, {:integer, pref}}, {:ok, acc} when pref in 0..10 ->
+        case Algorithms.from_iana(key) do
+          {:ok, alg} -> {:cont, {:ok, Map.put(acc, alg, pref)}}
+          :error -> {:cont, {:ok, Map.put(acc, key, pref)}}
+        end
+
+      {_key, {:integer, _out_of_range}}, _acc ->
+        {:halt, {:error, %Error{reason: :invalid_preference}}}
+
+      {_key, {:binary, _}}, _acc ->
+        {:halt, {:error, %Error{reason: :malformed_header}}}
+    end)
   end
 end
