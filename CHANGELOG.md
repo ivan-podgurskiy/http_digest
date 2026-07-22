@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.0 (unreleased)
+## v0.1.0 (2026-07-22)
 
 - Build and parse RFC 9530 `Content-Digest` and `Repr-Digest` field values.
 - Verify digest fields with a downgrade-aware `:strongest` policy and optional
